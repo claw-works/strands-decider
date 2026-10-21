@@ -48,20 +48,20 @@ from strands.interventions import Guide, InterventionHandler, Proceed
 
 # --------------------------------------------------------------------------- the questions
 #
-# Two narrow yes/no (noul) questions, each a single judgement: one about the arguments, one
+# Two narrow yes/no (predicate) questions, each a single judgement: one about the arguments, one
 # about the timing. strands-decider answers each with P(true) in 0..1; it never decides the
 # action. The `true`/`false` descriptions carry most of the signal, so they are worth
 # writing as carefully as the questions themselves.
 
 QUESTIONS = {
-    "args_grounded": Decider.noul(
+    "args_grounded": Decider.predicate(
         "Are the tool's argument values grounded in facts the user actually provided?",
         {
             "true": "every argument value traces back to something the user said",
             "false": "an argument value was guessed or invented, not stated by the user",
         },
     ),
-    "premature": Decider.noul(
+    "premature": Decider.predicate(
         "Is it premature to call this tool now, before clarifying with the user?",
         {
             "true": "the assistant should ask a clarifying question before calling the tool",
@@ -117,8 +117,8 @@ class ToolCallReviewer(InterventionHandler):
         )
 
         answers = self._decider.ask(state, QUESTIONS)
-        args_grounded = answers["args_grounded"]["noul"]
-        premature = answers["premature"]["noul"]
+        args_grounded = answers["args_grounded"]["probability"]
+        premature = answers["premature"]["probability"]
 
         print("[intervention] classifications (probability of 'yes'):")
         print(f"    args_grounded  : {args_grounded:.2f}")

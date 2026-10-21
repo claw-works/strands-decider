@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
@@ -38,7 +39,7 @@ This is the upstream CLI entry point (`[project.scripts]` in `pyproject.toml`), 
 separate thing from NAME: it only changes if the Python package itself is renamed.
 """
 
-MODEL_ID = "hobson-latest"
+MODEL_ID = "strands-decider-latest"
 """Sent as `model` on every request. The server ignores it and answers as whatever
 checkpoint it loaded, so this is only here to show the full wire shape."""
 
@@ -70,31 +71,39 @@ class Decider:
     # ---- questions -------------------------------------------------------
 
     @staticmethod
-    def noul(instructions: str, criteria: Mapping[str, str] | None = None) -> dict[str, Any]:
+    def predicate(instructions: str, criteria: Mapping[str, str] | None = None) -> dict[str, Any]:
         """Yes/no. The answer is P(true), and with two outcomes that *is* the confidence.
 
         `criteria` optionally describes what `"true"` and `"false"` mean. It is worth
-        writing: a noul renders as a two-option list, so those descriptions are read the
-        same way a choice's options are, and they sharpen the boundary considerably.
+        writing, since it sharpens the boundary considerably. OpenAI's predicate has no
+        field for it, so it is folded into the instructions.
         """
-        question: dict[str, Any] = {"type": "noul", "instructions": instructions}
         if criteria:
-            question["criteria"] = dict(criteria)
-        return question
+            lines = "\n".join(f"- {k}: {v}" for k, v in criteria.items())
+            instructions = f"{instructions}\n{lines}"
+        return {"type": "predicate", "instructions": instructions}
 
     @staticmethod
     def choice(instructions: str, criteria: Mapping[str, str]) -> dict[str, Any]:
-        """Pick one of N. `criteria` maps option name -> what that option means.
+        """Pick one of N. `criteria` maps option value -> what that option means.
 
         The option names are read from this request, not baked into the model, so you can
         change them without retraining anything.
         """
-        return {"type": "choice", "instructions": instructions, "criteria": dict(criteria)}
+        return {
+            "type": "choice",
+            "instructions": instructions,
+            "choices": [{"value": v, "description": d} for v, d in criteria.items()],
+        }
 
     @staticmethod
-    def score(instructions: str, criteria: list[str]) -> dict[str, Any]:
+    def score(instructions: str, levels: list[str]) -> dict[str, Any]:
         """Rate against an ordered rubric, lowest level first."""
-        return {"type": "score", "instructions": instructions, "criteria": list(criteria)}
+        return {
+            "type": "score",
+            "instructions": instructions,
+            "levels": [{"label": label} for label in levels],
+        }
 
     # ---- asking ----------------------------------------------------------
 
@@ -104,13 +113,20 @@ class Decider:
         )
 
     def ask(self, state: Any, questions: Mapping[str, dict[str, Any]]) -> dict[str, Any]:
-        """Evaluate `state` against `questions`; answers come back under the same keys."""
-        body = json.dumps(
-            {"state": state, "model": MODEL_ID, "questions": dict(questions)}
-        ).encode()
+        """Evaluate `state` against `questions`; answers come back under the same keys.
+
+        The request is OpenAI's Decisions shape (`POST /v1/decisions`), so the same call
+        works through `openai.OpenAI(base_url=f"{url}/v1").decisions.create(...)`.
+        """
+        body = json.dumps({
+            "model": MODEL_ID,
+            "input": state if isinstance(state, str) else json.dumps(state, indent=2),
+            "questions": [{**q, "name": name} for name, q in questions.items()],
+        }).encode()
         request = urllib.request.Request(
-            f"{self.url}/v1/systemone", data=body, headers={"content-type": "application/json"}
+            f"{self.url}/v1/decisions", data=body, headers={"content-type": "application/json"}
         )
+        started = time.perf_counter()
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 payload = json.loads(response.read())
@@ -118,8 +134,8 @@ class Decider:
             raise self._unavailable(exc) from exc
         self.calls += 1
         self.input_tokens += payload.get("usage", {}).get("input_tokens", 0)
-        self.last_latency_ms = payload.get("latency_ms")
-        return payload["answers"]
+        self.last_latency_ms = (time.perf_counter() - started) * 1000
+        return {answer["name"]: answer for answer in payload["answers"]}
 
     def health(self) -> dict[str, Any]:
         """The loaded checkpoint, window and device. Raises if nothing is serving."""
