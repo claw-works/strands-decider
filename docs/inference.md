@@ -18,7 +18,8 @@ CPU), so they report the numbers serving returns. `--device mlx` is refused.
 - [Environments for serving](#environments-for-serving): Linux with CUDA, a Mac, or CPU.
 - [Model artifact](#model-artifact): what a checkpoint holds, and the Hugging Face export.
 - [Ask](#ask): one command, with recorded v19 output and how to read its confidence.
-- [Serve](#serve): `POST /v1/systemone` and `/health`, on `127.0.0.1` with no authentication.
+- [Serve](#serve): `POST /v1/decisions` (OpenAI-compatible), `POST /v1/systemone` and `/health`,
+  on `127.0.0.1` with no authentication.
 - [Asking many questions is nearly free](#asking-many-questions-is-nearly-free): the shared-prefix cache.
 - [Serving on a Mac](#serving-on-a-mac): MPS, and the one kernel that had to be replaced.
 - [Serving on a Mac with MLX](#serving-on-a-mac-with-mlx): `--device mlx`, measured against MPS.
@@ -231,6 +232,28 @@ curl -s localhost:8000/v1/systemone -H 'content-type: application/json' -d '{
   }
 }'
 ```
+
+### OpenAI-compatible `POST /v1/decisions`
+
+The same engine also answers OpenAI's Decisions API shape, so `openai.OpenAI(base_url=
+"http://localhost:8000/v1").decisions.create(...)` works unchanged. The mapping lives in
+`src/strands_decider/openai_schema.py`:
+
+| OpenAI | System One | Notes |
+|---|---|---|
+| `input` (string, or `user` messages of `input_text` / `input_image`) | `state`, `images` | text parts joined with a blank line; images must be `data:image/...;base64,` URLs (remote URLs are refused, the server does not fetch on a caller's behalf) |
+| `questions[]` in order, optional `name` | `questions{}` by name | answers come back in question order with the caller's `name` (`null` if unnamed) |
+| `predicate` -> `probability` | `noul` -> `noul` | |
+| `choice`, `choices[{value, description}]` | `choice`, `criteria{name: description}` | string and boolean values both work and come back typed; `"true"` and `true` in one question are refused |
+| `score`, `levels[{label, description}]` | `score`, `criteria[...]` | a level renders as `label — description`; 2 to 10 levels |
+| `usage` | `usage` | `total_tokens` added; the cache and reasoning token details are always 0 |
+
+`model`, `prompt_cache_key`, `prompt_cache_options`, `safety_identifier`, `detail` and
+`prompt_cache_breakpoint` are accepted and ignored: the response names the checkpoint served,
+and the engine shares the state across questions on its own. A decision model always answers,
+so the `refusal` answer type is never returned; a low `confidence` is how it says it does not
+know. Bad requests get HTTP 400 in OpenAI's `{"error": {...}}` envelope, which the SDKs raise as
+`BadRequestError`.
 
 A hybrid torso such as v14's shares the state across questions like any other; a single
 question is encoded in one pass ([Asking many questions is nearly free](#asking-many-questions-is-nearly-free)).

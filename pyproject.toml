@@ -50,6 +50,7 @@ cuda = ["flash-linear-attention>=0.5; sys_platform == 'linux'"]
 mps = []
 cpu = []
 dev = [
+    "openai>=3.26",  # tests/test_openai_decisions.py drives the real SDK against /v1/decisions
     "pillow>=10",
     "pytest>=8.0",
     "ruff>=0.6",

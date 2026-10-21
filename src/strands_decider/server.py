@@ -1,8 +1,11 @@
-"""HTTP server exposing the System One API.
+"""HTTP server exposing the decision API in two wire formats over one engine.
 
-The path and the request and response shapes follow the public Jev API documentation.
-JevBench's typesafe adapter runs against this server unchanged (evaluation/jevbench.md).
-Compatibility with the Jev API itself is not verified.
+`POST /v1/decisions` follows OpenAI's Decisions API, so the `openai` SDKs work against
+this server by changing their base URL (see openai_schema.py for the mapping).
+
+`POST /v1/systemone` follows the public Jev API documentation. JevBench's typesafe adapter
+runs against it unchanged (evaluation/jevbench.md). Compatibility with the Jev API itself
+is not verified.
 """
 
 from __future__ import annotations
@@ -12,11 +15,14 @@ import os
 import threading
 import time
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response
 
 from .infer import EngineConfig, SystemOneEngine, load_mlx
 from .modeling import StrandsDeciderModel
+from .openai_schema import Decision, DecisionCreateRequest, error_body, from_systemone, to_systemone
 from .schema import SystemOneRequest, SystemOneResponse
 
 _engine: SystemOneEngine | None = None
@@ -113,6 +119,30 @@ def create_app(
         payload = response.model_dump()
         payload["latency_ms"] = round(elapsed_ms, 2)
         return JSONResponse(content=payload)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError) -> Response:
+        # OpenAI clients expect a 400 in OpenAI's error envelope; the System One paths
+        # keep FastAPI's 422.
+        if request.url.path != "/v1/decisions":
+            return await request_validation_exception_handler(request, exc)
+        first = exc.errors()[0] if exc.errors() else {}
+        loc = [str(p) for p in first.get("loc", ()) if p != "body"]
+        message = f"{'.'.join(loc) + ': ' if loc else ''}{first.get('msg', 'invalid request')}"
+        return JSONResponse(status_code=400, content=error_body(message, param=".".join(loc) or None))
+
+    @app.post("/v1/decisions", response_model=Decision)
+    def decisions(request: DecisionCreateRequest) -> JSONResponse:
+        eng = get_engine()
+        try:
+            native = to_systemone(request)
+            with guard:
+                response = eng.evaluate(native)
+        except ValueError as exc:
+            # Score levels out of range, more options than slots, images on a text-only
+            # engine -- caller error, reported the way OpenAI reports it.
+            return JSONResponse(status_code=400, content=error_body(str(exc)))
+        return JSONResponse(content=from_systemone(request, response).model_dump())
 
     return app
 

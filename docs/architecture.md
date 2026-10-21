@@ -228,7 +228,8 @@ src/strands_decider/              -- published package (inference only)
   mps_kernels.py  Gated DeltaNet chunk rule for Apple-silicon serving (no fla on macOS)
   cpu_kernels.py  the Gated DeltaNet depthwise causal conv for CPU inference
   mlx_engine.py   serving with the torso on MLX (--device mlx); the engine otherwise infer.py's
-  server.py       FastAPI, POST /v1/systemone
+  server.py       FastAPI, POST /v1/decisions (OpenAI) and POST /v1/systemone
+  openai_schema.py  OpenAI Decisions wire types and their mapping onto System One
   cli.py          the strands-decider command (ask / serve / info)
   hf_export.py    a checkpoint as a Hugging Face model folder (safetensors, card, manifest)
   naming.py       release naming helpers (used by hf_export and release scripts)

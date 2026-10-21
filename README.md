@@ -140,6 +140,27 @@ You can also run the model as a server, and ask questions via http requests:
 strands-decider serve StrandsAgents/strands-decider-2B-qwen3.5-v1-2610 --port 8000
 ```
 
+The server speaks OpenAI's [Decisions API](https://developers.openai.com/api/docs/guides/decisions)
+at `POST /v1/decisions`, so the `openai` SDK works against it by changing the base URL:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="unused")
+decision = client.decisions.create(
+    model="strands-decider-latest",  # ignored: the server answers as the checkpoint it loaded
+    input="Help! My payouts have been failing for 3 days!",
+    questions=[
+        {"type": "predicate", "name": "is_urgent", "instructions": "Does this convey urgency?"},
+        {"type": "choice", "name": "department", "instructions": "Route it.",
+         "choices": [{"value": "billing"}, {"value": "technical"}, {"value": "other"}]},
+    ],
+)
+print(decision.answers[0].probability, decision.answers[1].choice)
+```
+
+The original System One shape is still served at `POST /v1/systemone`:
+
 ```bash
 curl -s localhost:8000/v1/systemone \
   -H 'content-type: application/json' \
