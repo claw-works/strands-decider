@@ -198,6 +198,20 @@ def test_engine_rejections_get_openai_errors(client):
     assert "collide" in r.json()["error"]["message"]
 
 
+def test_invocations_takes_either_shape(client):
+    """SageMaker only calls /invocations, so an OpenAI body there must work too."""
+    openai_body = client.post("/invocations", json=DOCUMENTED).json()
+    assert openai_body["answers"] == client.post("/v1/decisions", json=DOCUMENTED).json()["answers"]
+
+    native = {"state": "x", "questions": {"q": {"type": "noul", "instructions": "y?"}}}
+    assert client.post("/invocations", json=native).json()["answers"]["q"]["type"] == "noul"
+
+    bad_openai = client.post("/invocations", json={**DOCUMENTED, "questions": [{"type": "noul"}]})
+    assert bad_openai.status_code == 400 and "error" in bad_openai.json()
+    bad_native = client.post("/invocations", json={"state": "x", "questions": {}})
+    assert bad_native.status_code == 422 and "detail" in bad_native.json()
+
+
 def test_systemone_keeps_its_own_errors(client):
     r = client.post("/v1/systemone", json={"state": "x", "questions": {}})
     assert r.status_code == 422

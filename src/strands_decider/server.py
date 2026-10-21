@@ -14,11 +14,14 @@ import contextlib
 import os
 import threading
 import time
+from collections.abc import Sequence
+from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from pydantic import ValidationError
 
 from .infer import EngineConfig, SystemOneEngine, load_mlx
 from .modeling import StrandsDeciderModel
@@ -82,8 +85,7 @@ def create_app(
         model = StrandsDeciderModel.load(checkpoint, attn_implementation=attn_implementation)
         _engine = SystemOneEngine(model, config)
 
-    # SageMaker and AgentCore Runtime call /ping and /invocations; each is the same
-    # handler as the path above it.
+    # SageMaker and AgentCore Runtime call /ping; it is the same handler as /health.
     @app.get("/health")
     @app.get("/ping")
     def health() -> dict:
@@ -104,9 +106,7 @@ def create_app(
     guard: contextlib.AbstractContextManager
     guard = _engine_lock if _needs_serialisation(device) else contextlib.nullcontext()
 
-    @app.post("/v1/systemone", response_model=SystemOneResponse)
-    @app.post("/invocations", response_model=SystemOneResponse)
-    def systemone(request: SystemOneRequest) -> JSONResponse:
+    def run_systemone(request: SystemOneRequest) -> JSONResponse:
         eng = get_engine()
         started = time.perf_counter()
         try:
@@ -120,19 +120,7 @@ def create_app(
         payload["latency_ms"] = round(elapsed_ms, 2)
         return JSONResponse(content=payload)
 
-    @app.exception_handler(RequestValidationError)
-    async def validation_error(request: Request, exc: RequestValidationError) -> Response:
-        # OpenAI clients expect a 400 in OpenAI's error envelope; the System One paths
-        # keep FastAPI's 422.
-        if request.url.path != "/v1/decisions":
-            return await request_validation_exception_handler(request, exc)
-        first = exc.errors()[0] if exc.errors() else {}
-        loc = [str(p) for p in first.get("loc", ()) if p != "body"]
-        message = f"{'.'.join(loc) + ': ' if loc else ''}{first.get('msg', 'invalid request')}"
-        return JSONResponse(status_code=400, content=error_body(message, param=".".join(loc) or None))
-
-    @app.post("/v1/decisions", response_model=Decision)
-    def decisions(request: DecisionCreateRequest) -> JSONResponse:
+    def run_decisions(request: DecisionCreateRequest) -> JSONResponse:
         eng = get_engine()
         try:
             native = to_systemone(request)
@@ -143,6 +131,43 @@ def create_app(
             # engine -- caller error, reported the way OpenAI reports it.
             return JSONResponse(status_code=400, content=error_body(str(exc)))
         return JSONResponse(content=from_systemone(request, response).model_dump())
+
+    def openai_validation_error(errors: Sequence[Any]) -> JSONResponse:
+        first = errors[0] if errors else {}
+        loc = [str(p) for p in first.get("loc", ()) if p != "body"]
+        message = f"{'.'.join(loc) + ': ' if loc else ''}{first.get('msg', 'invalid request')}"
+        return JSONResponse(status_code=400, content=error_body(message, param=".".join(loc) or None))
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError) -> Response:
+        # OpenAI clients expect a 400 in OpenAI's error envelope; the System One paths
+        # keep FastAPI's 422.
+        if request.url.path != "/v1/decisions":
+            return await request_validation_exception_handler(request, exc)
+        return openai_validation_error(exc.errors())
+
+    @app.post("/v1/systemone", response_model=SystemOneResponse)
+    def systemone(request: SystemOneRequest) -> JSONResponse:
+        return run_systemone(request)
+
+    @app.post("/v1/decisions", response_model=Decision)
+    def decisions(request: DecisionCreateRequest) -> JSONResponse:
+        return run_decisions(request)
+
+    # SageMaker and AgentCore Runtime only ever call /invocations, so it takes both
+    # shapes. They are told apart by `questions`: a list in OpenAI's, a map in System One's.
+    @app.post("/invocations")
+    def invocations(body: dict[str, Any] = Body(...)) -> JSONResponse:
+        if isinstance(body.get("questions"), list):
+            try:
+                return run_decisions(DecisionCreateRequest.model_validate(body))
+            except ValidationError as exc:
+                return openai_validation_error(exc.errors())
+        try:
+            request = SystemOneRequest.model_validate(body)
+        except ValidationError as exc:
+            raise RequestValidationError(exc.errors()) from exc
+        return run_systemone(request)
 
     return app
 

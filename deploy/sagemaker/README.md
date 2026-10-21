@@ -2,8 +2,9 @@
 
 This guide outlines how to host a strands decider model on Amazon SageMaker in your AWS
 account. One AWS CDK stack builds the model image and runs it on a SageMaker real-time
-endpoint. The endpoint takes the same request body as `POST /v1/systemone`
-([docs/inference.md, Serve](../../docs/inference.md#serve)) and returns the same response.
+endpoint. The endpoint takes the same request body as `POST /v1/systemone` or
+`POST /v1/decisions` (OpenAI's Decisions API shape)
+([docs/inference.md, Serve](../../docs/inference.md#serve)) and returns the matching response.
 
 To follow it you need:
 
@@ -77,8 +78,9 @@ It holds:
 2. The image, built from `Dockerfile` for `linux/amd64` by a CodeBuild project
    ([deploy-time-build](https://github.com/cdklabs/deploy-time-build)) and published to an ECR
    repository in the stack. It holds the package but no model weights, and runs
-   `strands-decider serve` on port 8080. The server answers SageMaker's `GET /ping` and
-   `POST /invocations` as `/health` and `/v1/systemone`.
+   `strands-decider serve` on port 8080. The server answers SageMaker's `GET /ping` as
+   `/health`, and `POST /invocations` as `/v1/decisions` when `questions` is a list (OpenAI's
+   shape) or as `/v1/systemone` when it is a map.
 3. The SageMaker model, endpoint config and endpoint, with an execution role that can read the
    bucket, pull the image and write logs. SageMaker copies the model from the bucket to
    `/opt/ml/model` on each instance before the container starts (`ModelDataSource`), and the
